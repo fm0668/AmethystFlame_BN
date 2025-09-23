@@ -19,6 +19,7 @@ log/
 # 特定文件（不上传）
 grid_BN_XRP.py
 VPS_DEPLOYMENT_GUIDE.md
+VPS_DEPLOYMENT_GUIDE_NEW.md
 
 # IDE文件
 .vscode/
