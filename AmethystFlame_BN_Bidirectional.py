@@ -1,3 +1,9 @@
+"""
+AmethystFlame_BN 双向网格交易策略 v1.0
+支持多头和空头同时运行的网格交易策略
+具备热更新配置功能，可实时调整策略参数
+"""
+
 import asyncio
 import websockets
 import json
@@ -10,6 +16,8 @@ import math
 import os
 import asyncio
 import uuid
+import threading
+from datetime import datetime
 from dotenv import load_dotenv
 
 # 加载.env文件
@@ -18,14 +26,14 @@ load_dotenv()
 # ==================== 配置 ====================
 API_KEY = os.getenv("API_KEY")  # 从.env文件读取API Key
 API_SECRET = os.getenv("API_SECRET")  # 从.env文件读取API Secret
-COIN_NAME = "ASTER"  # 交易币种
-CONTRACT_TYPE = "USDT"  # 合约类型：USDT 或 USDC
-GRID_SPACING = 0.005  # 网格间距 (0.3%)
-INITIAL_QUANTITY = 10  # 初始交易数量 (币数量)
+COIN_NAME = "XRP"  # 交易币种
+CONTRACT_TYPE = "USDC"  # 合约类型：USDT 或 USDC
+GRID_SPACING = 0.001  # 网格间距 (0.3%)
+INITIAL_QUANTITY = 3  # 初始交易数量 (币数量)
 LEVERAGE = 20  # 杠杆倍数
 WEBSOCKET_URL = "wss://fstream.binance.com/ws"  # WebSocket URL
-POSITION_THRESHOLD = 600  # 锁仓阈值
-POSITION_LIMIT = 200  # 持仓数量阈值
+POSITION_THRESHOLD = 500  # 锁仓阈值
+POSITION_LIMIT = 100  # 持仓数量阈值
 SYNC_TIME = 10  # 同步时间（秒）
 ORDER_FIRST_TIME = 10  # 首单间隔时间
 
@@ -41,6 +49,111 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger()
+
+
+# ==================== 高级配置管理类 ====================
+class AdvancedConfigManager:
+    def __init__(self, config_file="config.json"):
+        self.config_file = config_file
+        self.config = {}
+        self.last_modified = 0
+        self.lock = threading.Lock()
+        self.callbacks = {}
+        
+        # 初始化默认配置
+        self.default_config = {
+            "basic_params": {
+                "INITIAL_QUANTITY": 3,
+                "POSITION_THRESHOLD": 500,
+                "POSITION_LIMIT": 100,
+                "LEVERAGE": 20
+            },
+            "grid_params": {
+                "long_grid_spacing": 0.001,
+                "short_grid_spacing": 0.001,
+                "long_enabled": True,
+                "short_enabled": True
+            },
+            "risk_params": {
+                "ORDER_FIRST_TIME": 10,
+                "SYNC_TIME": 10
+            }
+        }
+        
+        self.load_config()
+    
+    def load_config(self):
+        """加载配置文件"""
+        try:
+            if not os.path.exists(self.config_file):
+                self.create_default_config()
+                return
+                
+            current_modified = os.path.getmtime(self.config_file)
+            if current_modified > self.last_modified:
+                with self.lock:
+                    with open(self.config_file, 'r', encoding='utf-8') as f:
+                        new_config = json.load(f)
+                    
+                    # 检查配置变更
+                    changes = self.detect_changes(self.config, new_config)
+                    self.config = new_config
+                    self.last_modified = current_modified
+                    
+                    # 触发变更回调
+                    for change_type, callback in self.callbacks.items():
+                        if change_type in changes:
+                            callback(changes[change_type])
+                    
+                    if changes:
+                        logger.info(f"配置已更新: {changes}")
+        except Exception as e:
+            logger.error(f"加载配置失败: {e}")
+    
+    def detect_changes(self, old_config, new_config):
+        """检测配置变更"""
+        changes = {}
+        
+        # 检查网格参数变更
+        old_grid = old_config.get("grid_params", {})
+        new_grid = new_config.get("grid_params", {})
+        
+        if old_grid.get("long_grid_spacing") != new_grid.get("long_grid_spacing"):
+            changes["long_grid_spacing"] = new_grid.get("long_grid_spacing")
+        
+        if old_grid.get("short_grid_spacing") != new_grid.get("short_grid_spacing"):
+            changes["short_grid_spacing"] = new_grid.get("short_grid_spacing")
+        
+        if old_grid.get("long_enabled") != new_grid.get("long_enabled"):
+            changes["long_enabled"] = new_grid.get("long_enabled")
+        
+        if old_grid.get("short_enabled") != new_grid.get("short_enabled"):
+            changes["short_enabled"] = new_grid.get("short_enabled")
+        
+        # 检查基础参数变更
+        old_basic = old_config.get("basic_params", {})
+        new_basic = new_config.get("basic_params", {})
+        
+        for key in ["INITIAL_QUANTITY", "POSITION_THRESHOLD", "POSITION_LIMIT"]:
+            if old_basic.get(key) != new_basic.get(key):
+                changes[key] = new_basic.get(key)
+        
+        return changes
+    
+    def create_default_config(self):
+        """创建默认配置文件"""
+        with open(self.config_file, 'w', encoding='utf-8') as f:
+            json.dump(self.default_config, f, indent=4, ensure_ascii=False)
+        logger.info("已创建默认配置文件")
+    
+    def get(self, section, key, default=None):
+        """获取配置值"""
+        self.load_config()  # 每次获取时检查更新
+        return self.config.get(section, {}).get(key, default)
+    
+    def register_callback(self, change_type, callback):
+        """注册配置变更回调"""
+        self.callbacks[change_type] = callback
 
 
 class CustomGate(ccxt.binance):
@@ -71,10 +184,15 @@ class GridTradingBot:
         self._get_price_precision()
 
         self.long_initial_quantity = 0  # 多头下单数量
+        self.short_initial_quantity = 0  # 空头下单数量
         self.long_position = 0  # 多头持仓 ws监控
+        self.short_position = 0  # 空头持仓 ws监控
         self.last_long_order_time = 0  # 上次多头挂单时间
+        self.last_short_order_time = 0  # 上次空头挂单时间
         self.buy_long_orders = 0.0  # 多头买入剩余挂单数量
         self.sell_long_orders = 0.0  # 多头卖出剩余挂单数量
+        self.sell_short_orders = 0.0  # 空头卖出剩余挂单数量
+        self.buy_short_orders = 0.0  # 空头买入剩余挂单数量
         self.last_position_update_time = 0  # 上次持仓更新时间
         self.last_orders_update_time = 0  # 上次订单更新时间
         self.last_ticker_update_time = 0  # ticker 时间限速
@@ -85,7 +203,26 @@ class GridTradingBot:
         self.mid_price_long = 0  # long 中间价
         self.lower_price_long = 0  # long 网格上
         self.upper_price_long = 0  # long 网格下
+        self.mid_price_short = 0  # short 中间价
+        self.lower_price_short = 0  # short 网格上
+        self.upper_price_short = 0  # short 网格下
         self.listenKey = self.get_listen_key()  # 获取初始 listenKey
+
+        # 初始化配置管理器
+        self.config_manager = AdvancedConfigManager()
+        
+        # 注册配置变更回调
+        self.config_manager.register_callback("long_grid_spacing", self.on_long_grid_spacing_changed)
+        self.config_manager.register_callback("short_grid_spacing", self.on_short_grid_spacing_changed)
+        self.config_manager.register_callback("long_enabled", self.on_long_enabled_changed)
+        self.config_manager.register_callback("short_enabled", self.on_short_enabled_changed)
+        self.config_manager.register_callback("INITIAL_QUANTITY", self.on_quantity_changed)
+        
+        # 动态参数状态
+        self.long_enabled = self.config_manager.get("grid_params", "long_enabled", True)
+        self.short_enabled = self.config_manager.get("grid_params", "short_enabled", True)
+        self.long_grid_spacing = self.config_manager.get("grid_params", "long_grid_spacing", grid_spacing)
+        self.short_grid_spacing = self.config_manager.get("grid_params", "short_grid_spacing", grid_spacing)
 
         # 检查持仓模式，如果不是双向持仓模式则停止程序
         self.check_and_enable_hedge_mode()
@@ -145,21 +282,24 @@ class GridTradingBot:
         positions = self.exchange.fetch_positions(params=params)
         # print(positions)
         long_position = 0
+        short_position = 0
 
         for position in positions:
             if position['symbol'] == self.ccxt_symbol:  # 使用动态的 symbol 变量
                 contracts = position.get('contracts', 0)  # 获取合约数量
                 side = position.get('side', None)  # 获取仓位方向
 
-                # 判断是否为多头
+                # 判断是否为多头或空头
                 if side == 'long':  # 多头
                     long_position = contracts
+                elif side == 'short':  # 空头
+                    short_position = abs(contracts)  # 使用绝对值来计算空头合约数
 
         # 如果没有持仓，返回 0
-        if long_position == 0:
-            return 0
+        if long_position == 0 and short_position == 0:
+            return 0, 0
 
-        return long_position
+        return long_position, short_position
 
     async def monitor_orders(self):
         """监控挂单状态，超过300秒未成交的挂单自动取消"""
@@ -173,6 +313,8 @@ class GridTradingBot:
                     logger.info("当前没有未成交的挂单")
                     self.buy_long_orders = 0.0  # 多头买入剩余挂单数量
                     self.sell_long_orders = 0.0  # 多头卖出剩余挂单数量
+                    self.sell_short_orders = 0.0  # 空头卖出剩余挂单数量
+                    self.buy_short_orders = 0.0  # 空头买入剩余挂单数量
                     continue
 
                 for order in orders:
@@ -198,13 +340,15 @@ class GridTradingBot:
                 logger.error(f"监控挂单状态失败: {e}")
 
     def check_orders_status(self):
-        """检查当前所有挂单的状态，并更新多头的挂单数量"""
+        """检查当前所有挂单的状态，并更新多头和空头的挂单数量"""
         # 获取当前所有挂单（带 symbol 参数，限制为某个交易对）
         orders = self.exchange.fetch_open_orders(symbol=self.ccxt_symbol)
 
         # 初始化计数器
         buy_long_orders = 0.0  # 使用浮点数
         sell_long_orders = 0.0  # 使用浮点数
+        buy_short_orders = 0.0  # 使用浮点数
+        sell_short_orders = 0.0  # 使用浮点数
 
         for order in orders:
             # 获取订单的原始委托数量（取绝对值）
@@ -217,17 +361,23 @@ class GridTradingBot:
                 buy_long_orders += orig_quantity
             elif side == 'sell' and position_side == 'LONG':  # 多头卖单
                 sell_long_orders += orig_quantity
+            elif side == 'buy' and position_side == 'SHORT':  # 空头买单
+                buy_short_orders += orig_quantity
+            elif side == 'sell' and position_side == 'SHORT':  # 空头卖单
+                sell_short_orders += orig_quantity
 
         # 更新实例变量
         self.buy_long_orders = buy_long_orders
         self.sell_long_orders = sell_long_orders
+        self.buy_short_orders = buy_short_orders
+        self.sell_short_orders = sell_short_orders
 
     async def run(self):
         """启动 WebSocket 监听"""
         # 初始化时获取一次持仓数据
-        self.long_position = self.get_position()
+        self.long_position, self.short_position = self.get_position()
         # self.last_position_update_time = time.time()
-        logger.info(f"初始化持仓: 多头 {self.long_position} 张")
+        logger.info(f"初始化持仓: 多头 {self.long_position} 张, 空头 {self.short_position} 张")
 
         # 等待状态同步完成
         await asyncio.sleep(5)  # 等待 5 秒
@@ -235,7 +385,7 @@ class GridTradingBot:
         # 初始化时获取一次挂单状态
         self.check_orders_status()
         logger.info(
-            f"初始化挂单状态: 多头开仓={self.buy_long_orders}, 多头止盈={self.sell_long_orders}")
+            f"初始化挂单状态: 多头开仓={self.buy_long_orders}, 多头止盈={self.sell_long_orders}, 空头开仓={self.sell_short_orders}, 空头止盈={self.buy_short_orders}")
 
         # 启动挂单监控任务
         # asyncio.create_task(self.monitor_orders())
@@ -350,15 +500,15 @@ class GridTradingBot:
 
             # 检查持仓状态是否过时
             if time.time() - self.last_position_update_time > SYNC_TIME:  # 超过 60 秒未更新
-                self.long_position = self.get_position()
+                self.long_position, self.short_position = self.get_position()
                 self.last_position_update_time = time.time()
-                logger.info(f"同步 position: 多头 {self.long_position} 张 @ ticker")
+                logger.info(f"同步 position: 多头 {self.long_position} 张, 空头 {self.short_position} 张 @ ticker")
 
             # 检查持仓状态是否过时
             if time.time() - self.last_orders_update_time > SYNC_TIME:  # 超过 60 秒未更新
                 self.check_orders_status()
                 self.last_orders_update_time = time.time()
-                logger.info(f"同步 orders: 多头买单 {self.buy_long_orders} 张, 多头卖单 {self.sell_long_orders} 张 @ ticker")
+                logger.info(f"同步 orders: 多头买单 {self.buy_long_orders} 张, 多头卖单 {self.sell_long_orders} 张,空头卖单 {self.sell_short_orders} 张, 空头买单 {self.buy_short_orders} 张 @ ticker")
 
             await self.adjust_grid_strategy()
 
@@ -384,31 +534,45 @@ class GridTradingBot:
                         if side == "BUY":
                             if position_side == "LONG":  # 多头开仓单
                                 self.buy_long_orders += remaining
+                            elif position_side == "SHORT":  # 空头止盈单
+                                self.buy_short_orders += remaining
                         elif side == "SELL":
                             if position_side == "LONG":  # 多头止盈单
                                 self.sell_long_orders += remaining
+                            elif position_side == "SHORT":  # 空头开仓单
+                                self.sell_short_orders += remaining
                     elif status == "FILLED":  # 订单已成交
                         if side == "BUY":
                             if position_side == "LONG":  # 多头开仓单
                                 self.long_position += filled  # 更新多头持仓
                                 self.buy_long_orders = max(0.0, self.buy_long_orders - filled)  # 更新挂单状态
+                            elif position_side == "SHORT":  # 空头止盈单
+                                self.short_position = max(0.0, self.short_position - filled)  # 更新空头持仓
+                                self.buy_short_orders = max(0.0, self.buy_short_orders - filled)  # 更新挂单状态
                         elif side == "SELL":
                             if position_side == "LONG":  # 多头止盈单
                                 self.long_position = max(0.0, self.long_position - filled)  # 更新多头持仓
                                 self.sell_long_orders = max(0.0, self.sell_long_orders - filled)  # 更新挂单状态
+                            elif position_side == "SHORT":  # 空头开仓单
+                                self.short_position += filled  # 更新空头持仓
+                                self.sell_short_orders = max(0.0, self.sell_short_orders - filled)  # 更新挂单状态
                     elif status == "CANCELED":  # 订单已取消
                         if side == "BUY":
                             if position_side == "LONG":  # 多头开仓单
                                 self.buy_long_orders = max(0.0, self.buy_long_orders - quantity)
+                            elif position_side == "SHORT":  # 空头止盈单
+                                self.buy_short_orders = max(0.0, self.buy_short_orders - quantity)
                         elif side == "SELL":
                             if position_side == "LONG":  # 多头止盈单
                                 self.sell_long_orders = max(0.0, self.sell_long_orders - quantity)
+                            elif position_side == "SHORT":  # 空头开仓单
+                                self.sell_short_orders = max(0.0, self.sell_short_orders - quantity)
 
                     # # 打印当前挂单状态
                     # logger.info(
-                    #     f"挂单状态: 多头开仓={self.buy_long_orders}, 多头止盈={self.sell_long_orders}")
+                    #     f"挂单状态: 多头开仓={self.buy_long_orders}, 多头止盈={self.sell_long_orders}, 空头开仓={self.sell_short_orders}, 空头止盈={self.buy_short_orders}")
                     # # 打印当前持仓状态
-                    # logger.info(f"持仓状态: 多头={self.long_position}")
+                    # logger.info(f"持仓状态: 多头={self.long_position}, 空头={self.short_position}")
 
     def get_take_profit_quantity(self, position, side):
         # print(side)
@@ -418,8 +582,23 @@ class GridTradingBot:
             if position > POSITION_LIMIT:
                 # logger.info(f"持仓过大超过阈值{POSITION_LIMIT}, {side}双倍止盈止损")
                 self.long_initial_quantity = self.initial_quantity * 2
+
+            # 如果 short 锁仓 long 两倍
+            elif self.short_position >= POSITION_THRESHOLD:
+                self.long_initial_quantity = self.initial_quantity * 2
             else:
                 self.long_initial_quantity = self.initial_quantity
+
+        elif side == 'short':
+            if position > POSITION_LIMIT:
+                # logger.info(f"持仓过大超过阈值{POSITION_LIMIT}, {side}双倍止盈止损")
+                self.short_initial_quantity = self.initial_quantity * 2
+
+            # 如果 long 锁仓 short 两倍
+            elif self.long_position >= POSITION_THRESHOLD:
+                self.short_initial_quantity = self.initial_quantity * 2
+            else:
+                self.short_initial_quantity = self.initial_quantity
 
     async def initialize_long_orders(self):
         # 检查上次挂单时间，确保 10 秒内不重复挂单
@@ -443,6 +622,24 @@ class GridTradingBot:
         # 更新上次多头挂单时间
         self.last_long_order_time = time.time()
         logger.info("初始化多头挂单完成")
+
+    async def initialize_short_orders(self):
+        # 检查上次挂单时间，确保 10 秒内不重复挂单
+        current_time = time.time()
+        if current_time - self.last_short_order_time < ORDER_FIRST_TIME:
+            print(f"距离上次空头挂单时间不足 {ORDER_FIRST_TIME} 秒，跳过本次挂单")
+            return
+
+        # 撤销所有空头挂单
+        self.cancel_orders_for_side('short')
+
+        # 挂出空头开仓单
+        self.place_order('sell', self.best_ask_price, self.initial_quantity, False, 'short')
+        logger.info(f"挂出空头开仓单: 卖出 @ {self.latest_price}")
+
+        # 更新上次空头挂单时间
+        self.last_short_order_time = time.time()
+        logger.info("初始化空头挂单完成")
 
     def cancel_orders_for_side(self, position_side):
         """撤销某个方向的所有挂单"""
@@ -468,6 +665,15 @@ class GridTradingBot:
                             # logger.info("发现多头止盈挂单，准备撤销")
                             self.cancel_order(order['id'])  # 撤销该订单
 
+                    elif position_side == 'short':
+                        # 如果是空头开仓订单：卖单且 reduceOnly 为 False
+                        if not reduce_only and side == 'sell' and position_side_order == 'SHORT':
+                            # logger.info("发现空头开仓挂单，准备撤销")
+                            self.cancel_order(order['id'])  # 撤销该订单
+                        # 如果是空头止盈订单：买单且 reduceOnly 为 True
+                        elif reduce_only and side == 'buy' and position_side_order == 'SHORT':
+                            # logger.info("发现空头止盈挂单，准备撤销")
+                            self.cancel_order(order['id'])  # 撤销该订单
             except ccxt.OrderNotFound as e:
                 logger.warning(f"订单 {order['id']} 不存在，无需撤销: {e}")
                 self.check_orders_status()  # 强制更新挂单状态
@@ -539,6 +745,9 @@ class GridTradingBot:
             if side == 'long' and self.long_position <= 0:
                 logger.warning("没有多头持仓，跳过挂出多头止盈单")
                 return
+            elif side == 'short' and self.short_position <= 0:
+                logger.warning("没有空头持仓，跳过挂出空头止盈单")
+                return
             # 修正价格精度
             price = round(price, self.price_precision)
 
@@ -555,9 +764,14 @@ class GridTradingBot:
                 }
                 order = self.exchange.create_order(ccxt_symbol, 'limit', 'sell', quantity, price, params)
                 logger.info(f"成功挂 long 止盈单: 卖出 {quantity} {ccxt_symbol} @ {price}")
-            else:
-                logger.warning(f"不支持的仓位方向: {side}")
-                return
+            elif side == 'short':
+                # 买入空头仓位止盈，应该使用 close_short 来平仓
+                order = self.exchange.create_order(ccxt_symbol, 'limit', 'buy', quantity, price, {
+                    'newClientOrderId': str(uuid.uuid4()),
+                    'reduce_only': True,
+                    'positionSide': 'SHORT'
+                })
+                logger.info(f"成功挂 short 止盈单: 买入 {quantity} {ccxt_symbol} @ {price}")
         except ccxt.BaseError as e:
             logger.error(f"挂止盈单失败: {e}")
 
@@ -567,33 +781,62 @@ class GridTradingBot:
             self.get_take_profit_quantity(self.long_position, 'long')
             if self.long_position > 0:
                 # print('多头持仓', self.long_position)
+                # 使用动态持仓阈值
+                dynamic_threshold = self.get_dynamic_position_threshold()
                 # 检查持仓是否超过阈值
-                if self.long_position > POSITION_THRESHOLD:
-                    print(f"持仓{self.long_position}超过极限阈值 {POSITION_THRESHOLD}，long装死")
+                if self.long_position > dynamic_threshold:
+                    print(f"持仓{self.long_position}超过极限阈值 {dynamic_threshold}，long装死")
                     if self.sell_long_orders <= 0:
-                        logger.info("发现多头止盈单缺失。。需要补止盈单")
-                        self.place_take_profit_order(self.ccxt_symbol, 'long', self.latest_price * 1.01,
-                                                     self.long_initial_quantity)  # 挂止盈
+                        r = float((self.long_position / self.short_position) / 100 + 1)
+                        # 使用动态数量
+                        dynamic_quantity = self.get_dynamic_quantity()
+                        self.place_take_profit_order(self.ccxt_symbol, 'long', self.latest_price * r,
+                                                     dynamic_quantity)  # 挂止盈
                 else:
                     # 更新中间价
                     self.update_mid_price('long', latest_price)
                     self.cancel_orders_for_side('long')
+                    # 使用动态数量
+                    dynamic_quantity = self.get_dynamic_quantity()
                     self.place_take_profit_order(self.ccxt_symbol, 'long', self.upper_price_long,
-                                                 self.long_initial_quantity)  # 挂止盈
-                    self.place_order('buy', self.lower_price_long, self.long_initial_quantity, False, 'long')  # 挂补仓
+                                                 dynamic_quantity)  # 挂止盈
+                    self.place_order('buy', self.lower_price_long, dynamic_quantity, False, 'long')  # 挂补仓
                     logger.info("挂多头止盈，挂多头补仓")
 
         except Exception as e:
             logger.error(f"挂多头订单失败: {e}")
 
-    def update_mid_price(self, side, price):
-        """更新中间价"""
-        if side == 'long':
-            self.mid_price_long = price  # 更新多头中间价
-            # 计算上下网格价格 加上价格精度，price_precision
-            self.upper_price_long = self.mid_price_long * (1 + self.grid_spacing)
-            self.lower_price_long = self.mid_price_long * (1 - self.grid_spacing)
-            print("更新 long 中间价")
+    async def place_short_orders(self, latest_price):
+        """挂空头订单"""
+        try:
+            self.get_take_profit_quantity(self.short_position, 'short')
+            if self.short_position > 0:
+                # 使用动态持仓阈值
+                dynamic_threshold = self.get_dynamic_position_threshold()
+                # 检查持仓是否超过阈值
+                if self.short_position > dynamic_threshold:
+                    print(f"持仓{self.short_position}超过极限阈值 {dynamic_threshold}，short 装死")
+                    if self.buy_short_orders <= 0:
+                        r = float((self.short_position / self.long_position) / 100 + 1)
+                        logger.info("发现多头止盈单缺失。。需要补止盈单")
+                        # 使用动态数量
+                        dynamic_quantity = self.get_dynamic_quantity()
+                        self.place_take_profit_order(self.ccxt_symbol, 'short', self.latest_price * r,
+                                                     dynamic_quantity)  # 挂止盈
+
+                else:
+                    # 更新中间价
+                    self.update_mid_price('short', latest_price)
+                    self.cancel_orders_for_side('short')
+                    # 使用动态数量
+                    dynamic_quantity = self.get_dynamic_quantity()
+                    self.place_take_profit_order(self.ccxt_symbol, 'short', self.lower_price_short,
+                                                 dynamic_quantity)  # 挂止盈
+                    self.place_order('sell', self.upper_price_short, dynamic_quantity, False, 'short')  # 挂补仓
+                    logger.info("挂空头止盈，挂空头补仓")
+
+        except Exception as e:
+            logger.error(f"挂空头订单失败: {e}")
 
     def check_and_enable_hedge_mode(self):
         """检查并启用双向持仓模式，如果切换失败则停止程序"""
@@ -641,52 +884,142 @@ class GridTradingBot:
         # 设置平仓数量
         quantity = POSITION_THRESHOLD * 0.1  # 阈值的 10%
 
-        if self.long_position >= local_position_threshold:
-            logger.info(f"多头持仓超过阈值 {local_position_threshold}，开始平仓，减少库存风险")
+        if self.long_position >= local_position_threshold and self.short_position >= local_position_threshold:
+            logger.info(f"多头和空头持仓均超过阈值 {local_position_threshold}，开始双向平仓，减少库存风险")
             # 平仓多头（使用市价单）
             if self.long_position > 0:
                 self.place_order('sell', price=self.best_ask_price, quantity=quantity, is_reduce_only=True, position_side='long',
                                  order_type='market')
                 logger.info(f"市价平仓多头 {quantity} 个")
 
+            # 平仓空头（使用市价单）
+            if self.short_position > 0:
+                self.place_order('buy', price=self.best_bid_price, quantity=quantity, is_reduce_only=True, position_side='short',
+                                 order_type='market')
+                logger.info(f"市价平仓空头 {quantity} 个")
+
     def update_mid_price(self, side, price):
         """更新中间价"""
         if side == 'long':
             self.mid_price_long = price  # 更新多头中间价
-            # 计算上下网格价格 加上价格精度，price_precision
-            self.upper_price_long = self.mid_price_long * (1 + self.grid_spacing)
-            self.lower_price_long = self.mid_price_long * (1 - self.grid_spacing)
-            print("更新 long 中间价")
-        else:
-            logger.warning(f"不支持的仓位方向: {side}")
+            # 使用独立的多头网格间距计算上下网格价格
+            self.upper_price_long = self.mid_price_long * (1 + self.long_grid_spacing)
+            self.lower_price_long = self.mid_price_long * (1 - self.long_grid_spacing)
+            print(f"更新 long 中间价，使用网格间距: {self.long_grid_spacing}")
+
+        elif side == 'short':
+            self.mid_price_short = price  # 更新空头中间价
+            # 使用独立的空头网格间距计算上下网格价格
+            self.upper_price_short = self.mid_price_short * (1 + self.short_grid_spacing)
+            self.lower_price_short = self.mid_price_short * (1 - self.short_grid_spacing)
+            print(f"更新 short 中间价，使用网格间距: {self.short_grid_spacing}")
 
     # ==================== 策略逻辑 ====================
     async def adjust_grid_strategy(self):
 
         """根据最新价格和持仓调整网格策略"""
-        # 检查持仓库存，如果达到阈值，就部分平仓减少库存风险，提高保证金使用率
+        # 检查双向仓位库存，如果同时达到，就统一部分平仓减少库存风险，提高保证金使用率
         self.check_and_reduce_positions()
-        # print(self.latest_price, '多挂', self.buy_long_orders, '多平', self.sell_long_orders)
+        # print(self.latest_price, '多挂', self.buy_long_orders, '多平', self.buy_long_orders, '空挂', self.sell_short_orders, '空平', self.buy_short_orders)
 
-        # 检测多头持仓
-        if self.long_position == 0:
-            print(f"检测到没有多头持仓{self.long_position}，初始化多头挂单@ ticker")
-            await self.initialize_long_orders()
-        else:
-            # 修复逻辑：只有当订单数量不正常时才重新挂单
-            orders_invalid = (self.buy_long_orders == 0 or self.sell_long_orders == 0) or \
-                            (self.buy_long_orders > self.long_initial_quantity or self.sell_long_orders > self.long_initial_quantity)
-            if orders_invalid:
-                if self.long_position < POSITION_THRESHOLD:
-                    print('如果 long 持仓没到阈值，同步后再次确认！')
-                    self.check_orders_status()
-                    # 重新检查订单状态后再决定是否挂单
-                    orders_still_invalid = (self.buy_long_orders == 0 or self.sell_long_orders == 0) or \
-                                          (self.buy_long_orders > self.long_initial_quantity or self.sell_long_orders > self.long_initial_quantity)
-                    if orders_still_invalid:
+        # 检测多头持仓 - 添加启用状态检查
+        if self.long_enabled:
+            if self.long_position == 0:
+                print(f"检测到没有多头持仓{self.long_position}，初始化多头挂单@ ticker")
+                await self.initialize_long_orders()
+            else:
+                orders_valid = not (0 < self.buy_long_orders <= self.long_initial_quantity) or \
+                               not (0 < self.sell_long_orders <= self.long_initial_quantity)
+                if orders_valid:
+                    dynamic_threshold = self.get_dynamic_position_threshold()
+                    if self.long_position < dynamic_threshold:
+                        print('如果 long 持仓没到阈值，同步后再次确认！')
+                        self.check_orders_status()
+                        if orders_valid:
+                            await self.place_long_orders(self.latest_price)
+                    else:
                         await self.place_long_orders(self.latest_price)
-                else:
-                    await self.place_long_orders(self.latest_price)
+        else:
+            print("多头策略已禁用，跳过多头处理")
+            
+        # 检测空头持仓 - 添加启用状态检查
+        if self.short_enabled:
+            if self.short_position == 0:
+                await self.initialize_short_orders()
+            else:
+                # 检查订单数量是否在合理范围内
+                orders_valid = not (0 < self.sell_short_orders <= self.short_initial_quantity) or \
+                               not (0 < self.buy_short_orders <= self.short_initial_quantity)
+                if orders_valid:
+                    dynamic_threshold = self.get_dynamic_position_threshold()
+                    if self.short_position < dynamic_threshold:
+                        print('如果 short 持仓没到阈值，同步后再次确认！')
+                        self.check_orders_status()
+                        if orders_valid:
+                            await self.place_short_orders(self.latest_price)
+                    else:
+                        await self.place_short_orders(self.latest_price)
+        else:
+            print("空头策略已禁用，跳过空头处理")
+
+    # ==================== 配置变更回调函数 ====================
+    def on_long_grid_spacing_changed(self, new_value):
+        """多头网格间距变更回调"""
+        logger.info(f"多头网格间距更新: {self.long_grid_spacing} -> {new_value}")
+        self.long_grid_spacing = new_value
+        # 重新计算多头网格价格
+        if hasattr(self, 'latest_price') and self.latest_price > 0:
+            self.update_mid_price(self.latest_price)
+    
+    def on_short_grid_spacing_changed(self, new_value):
+        """空头网格间距变更回调"""
+        logger.info(f"空头网格间距更新: {self.short_grid_spacing} -> {new_value}")
+        self.short_grid_spacing = new_value
+        # 重新计算空头网格价格
+        if hasattr(self, 'latest_price') and self.latest_price > 0:
+            self.update_mid_price(self.latest_price)
+    
+    def on_long_enabled_changed(self, new_value):
+        """多头启用状态变更回调"""
+        logger.info(f"多头启用状态更新: {self.long_enabled} -> {new_value}")
+        old_enabled = self.long_enabled
+        self.long_enabled = new_value
+        
+        # 如果从启用变为禁用，取消所有多头订单
+        if old_enabled and not new_value:
+            asyncio.create_task(self.cancel_orders_for_side('LONG'))
+            logger.info("多头已禁用，取消所有多头订单")
+    
+    def on_short_enabled_changed(self, new_value):
+        """空头启用状态变更回调"""
+        logger.info(f"空头启用状态更新: {self.short_enabled} -> {new_value}")
+        old_enabled = self.short_enabled
+        self.short_enabled = new_value
+        
+        # 如果从启用变为禁用，取消所有空头订单
+        if old_enabled and not new_value:
+            asyncio.create_task(self.cancel_orders_for_side('SHORT'))
+            logger.info("空头已禁用，取消所有空头订单")
+    
+    def on_quantity_changed(self, new_value):
+        """初始数量变更回调"""
+        logger.info(f"初始数量更新: {self.initial_quantity} -> {new_value}")
+        self.initial_quantity = new_value
+        # 更新多头和空头的初始数量
+        self.long_initial_quantity = new_value
+        self.short_initial_quantity = new_value
+    
+    def get_dynamic_quantity(self):
+        """获取动态数量参数"""
+        return self.config_manager.get("basic_params", "INITIAL_QUANTITY", self.initial_quantity)
+    
+    def get_dynamic_position_threshold(self):
+        """获取动态持仓阈值"""
+        return self.config_manager.get("basic_params", "POSITION_THRESHOLD", POSITION_THRESHOLD)
+    
+    def get_dynamic_position_limit(self):
+        """获取动态持仓限制"""
+        return self.config_manager.get("basic_params", "POSITION_LIMIT", POSITION_LIMIT)
 
 
 # ==================== 主程序 ====================

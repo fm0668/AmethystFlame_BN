@@ -1,0 +1,20 @@
+{
+    "_version": "1.0",
+    "_description": "AmethystFlame_BN 双向网格交易策略配置文件",
+    "basic_params": {
+        "INITIAL_QUANTITY": 3,
+        "POSITION_THRESHOLD": 500,
+        "POSITION_LIMIT": 100,
+        "LEVERAGE": 20
+    },
+    "grid_params": {
+        "long_grid_spacing": 0.001,
+        "short_grid_spacing": 0.001,
+        "long_enabled": true,
+        "short_enabled": true
+    },
+    "risk_params": {
+        "ORDER_FIRST_TIME": 10,
+        "SYNC_TIME": 10
+    }
+}
