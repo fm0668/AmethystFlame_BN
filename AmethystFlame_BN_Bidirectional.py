@@ -26,14 +26,14 @@ load_dotenv()
 # ==================== 配置 ====================
 API_KEY = os.getenv("API_KEY")  # 从.env文件读取API Key
 API_SECRET = os.getenv("API_SECRET")  # 从.env文件读取API Secret
-COIN_NAME = "XRP"  # 交易币种
-CONTRACT_TYPE = "USDC"  # 合约类型：USDT 或 USDC
-GRID_SPACING = 0.001  # 网格间距 (0.3%)
-INITIAL_QUANTITY = 3  # 初始交易数量 (币数量)
+COIN_NAME = "XPL"  # 交易币种
+CONTRACT_TYPE = "USDT"  # 合约类型：USDT 或 USDC
+GRID_SPACING = 0.006  # 网格间距 (0.3%)
+INITIAL_QUANTITY = 10  # 初始交易数量 (币数量)
 LEVERAGE = 20  # 杠杆倍数
 WEBSOCKET_URL = "wss://fstream.binance.com/ws"  # WebSocket URL
-POSITION_THRESHOLD = 500  # 锁仓阈值
-POSITION_LIMIT = 100  # 持仓数量阈值
+POSITION_THRESHOLD = 1000  # 锁仓阈值
+POSITION_LIMIT = 400  # 持仓数量阈值
 SYNC_TIME = 10  # 同步时间（秒）
 ORDER_FIRST_TIME = 10  # 首单间隔时间
 
@@ -62,15 +62,19 @@ class AdvancedConfigManager:
         
         # 初始化默认配置
         self.default_config = {
+            "trading_params": {
+                "COIN_NAME": "XPL",
+                "CONTRACT_TYPE": "USDT"
+            },
             "basic_params": {
-                "INITIAL_QUANTITY": 3,
-                "POSITION_THRESHOLD": 500,
-                "POSITION_LIMIT": 100,
+                "INITIAL_QUANTITY": 20,
+                "POSITION_THRESHOLD": 1000,
+                "POSITION_LIMIT": 400,
                 "LEVERAGE": 20
             },
             "grid_params": {
-                "long_grid_spacing": 0.001,
-                "short_grid_spacing": 0.001,
+                "long_grid_spacing": 0.006,
+                "short_grid_spacing": 0.008,
                 "long_enabled": True,
                 "short_enabled": True
             },
@@ -113,6 +117,16 @@ class AdvancedConfigManager:
     def detect_changes(self, old_config, new_config):
         """检测配置变更"""
         changes = {}
+        
+        # 检查交易参数变更
+        old_trading = old_config.get("trading_params", {})
+        new_trading = new_config.get("trading_params", {})
+        
+        if old_trading.get("COIN_NAME") != new_trading.get("COIN_NAME"):
+            changes["COIN_NAME"] = new_trading.get("COIN_NAME")
+        
+        if old_trading.get("CONTRACT_TYPE") != new_trading.get("CONTRACT_TYPE"):
+            changes["CONTRACT_TYPE"] = new_trading.get("CONTRACT_TYPE")
         
         # 检查网格参数变更
         old_grid = old_config.get("grid_params", {})
@@ -172,13 +186,19 @@ class GridTradingBot:
         self.lock = asyncio.Lock()  # 初始化线程锁
         self.api_key = api_key
         self.api_secret = api_secret
-        self.coin_name = coin_name
-        self.contract_type = contract_type  # 合约类型：USDT 或 USDC
+        
+        # 初始化配置管理器（优先初始化）
+        self.config_manager = AdvancedConfigManager()
+        
+        # 从配置文件读取交易参数，如果配置文件中没有则使用传入的参数作为默认值
+        self.coin_name = self.config_manager.get("trading_params", "COIN_NAME", coin_name)
+        self.contract_type = self.config_manager.get("trading_params", "CONTRACT_TYPE", contract_type)
+        
         self.grid_spacing = grid_spacing
         self.initial_quantity = initial_quantity
         self.leverage = leverage
         self.exchange = self._initialize_exchange()  # 初始化交易所
-        self.ccxt_symbol = f"{coin_name}/{contract_type}:{contract_type}"  # 动态生成交易对
+        self.ccxt_symbol = f"{self.coin_name}/{self.contract_type}:{self.contract_type}"  # 动态生成交易对
 
         # 获取价格精度{self.price_precision}, 数量精度: {self.amount_precision}, 最小下单数量: {self.min_order_amount}
         self._get_price_precision()
@@ -208,15 +228,14 @@ class GridTradingBot:
         self.upper_price_short = 0  # short 网格下
         self.listenKey = self.get_listen_key()  # 获取初始 listenKey
 
-        # 初始化配置管理器
-        self.config_manager = AdvancedConfigManager()
-        
         # 注册配置变更回调
         self.config_manager.register_callback("long_grid_spacing", self.on_long_grid_spacing_changed)
         self.config_manager.register_callback("short_grid_spacing", self.on_short_grid_spacing_changed)
         self.config_manager.register_callback("long_enabled", self.on_long_enabled_changed)
         self.config_manager.register_callback("short_enabled", self.on_short_enabled_changed)
         self.config_manager.register_callback("INITIAL_QUANTITY", self.on_quantity_changed)
+        self.config_manager.register_callback("COIN_NAME", self.on_coin_name_changed)
+        self.config_manager.register_callback("CONTRACT_TYPE", self.on_contract_type_changed)
         
         # 动态参数状态
         self.long_enabled = self.config_manager.get("grid_params", "long_enabled", True)
@@ -1009,6 +1028,30 @@ class GridTradingBot:
         self.long_initial_quantity = new_value
         self.short_initial_quantity = new_value
     
+    def on_coin_name_changed(self, new_value):
+        """交易币种变更回调"""
+        logger.info(f"交易币种更新: {self.coin_name} -> {new_value}")
+        old_coin_name = self.coin_name
+        self.coin_name = new_value
+        # 更新交易对符号
+        old_symbol = self.ccxt_symbol
+        self.ccxt_symbol = f"{self.coin_name}/{self.contract_type}:{self.contract_type}"
+        logger.info(f"交易对符号更新: {old_symbol} -> {self.ccxt_symbol}")
+        # 注意：实际应用中可能需要重新初始化交易所连接和WebSocket连接
+        logger.warning("交易币种变更需要重启程序以完全生效")
+    
+    def on_contract_type_changed(self, new_value):
+        """合约类型变更回调"""
+        logger.info(f"合约类型更新: {self.contract_type} -> {new_value}")
+        old_contract_type = self.contract_type
+        self.contract_type = new_value
+        # 更新交易对符号
+        old_symbol = self.ccxt_symbol
+        self.ccxt_symbol = f"{self.coin_name}/{self.contract_type}:{self.contract_type}"
+        logger.info(f"交易对符号更新: {old_symbol} -> {self.ccxt_symbol}")
+        # 注意：实际应用中可能需要重新初始化交易所连接和WebSocket连接
+        logger.warning("合约类型变更需要重启程序以完全生效")
+    
     def get_dynamic_quantity(self):
         """获取动态数量参数"""
         return self.config_manager.get("basic_params", "INITIAL_QUANTITY", self.initial_quantity)
@@ -1024,7 +1067,16 @@ class GridTradingBot:
 
 # ==================== 主程序 ====================
 async def main():
-    bot = GridTradingBot(API_KEY, API_SECRET, COIN_NAME, CONTRACT_TYPE, GRID_SPACING, INITIAL_QUANTITY, LEVERAGE)
+    # 创建配置管理器来读取配置文件
+    config_manager = AdvancedConfigManager()
+    
+    # 从配置文件读取参数，如果没有则使用硬编码默认值
+    coin_name = config_manager.get("trading_params", "COIN_NAME", COIN_NAME)
+    contract_type = config_manager.get("trading_params", "CONTRACT_TYPE", CONTRACT_TYPE)
+    initial_quantity = config_manager.get("basic_params", "INITIAL_QUANTITY", INITIAL_QUANTITY)
+    leverage = config_manager.get("basic_params", "LEVERAGE", LEVERAGE)
+    
+    bot = GridTradingBot(API_KEY, API_SECRET, coin_name, contract_type, GRID_SPACING, initial_quantity, leverage)
     await bot.run()
 
 if __name__ == "__main__":
