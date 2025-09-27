@@ -26,16 +26,10 @@ load_dotenv()
 # ==================== 配置 ====================
 API_KEY = os.getenv("API_KEY")  # 从.env文件读取API Key
 API_SECRET = os.getenv("API_SECRET")  # 从.env文件读取API Secret
-COIN_NAME = "XPL"  # 交易币种
-CONTRACT_TYPE = "USDT"  # 合约类型：USDT 或 USDC
 GRID_SPACING = 0.006  # 网格间距 (0.3%)
-INITIAL_QUANTITY = 10  # 初始交易数量 (币数量)
-LEVERAGE = 20  # 杠杆倍数
 WEBSOCKET_URL = "wss://fstream.binance.com/ws"  # WebSocket URL
-POSITION_THRESHOLD = 1000  # 锁仓阈值
-POSITION_LIMIT = 400  # 持仓数量阈值
-SYNC_TIME = 10  # 同步时间（秒）
-ORDER_FIRST_TIME = 10  # 首单间隔时间
+
+# 注意：所有交易参数现在都从config.json中动态读取，支持热更新
 
 # ==================== 日志配置 ====================
 # 获取当前脚本的文件名（不带扩展名）
@@ -518,13 +512,14 @@ class GridTradingBot:
                 logger.error(f"解析价格失败: {e}")
 
             # 检查持仓状态是否过时
-            if time.time() - self.last_position_update_time > SYNC_TIME:  # 超过 60 秒未更新
+            sync_time = self.config_manager.get("risk_params", "SYNC_TIME", 10)
+            if time.time() - self.last_position_update_time > sync_time:  # 超过配置的同步时间未更新
                 self.long_position, self.short_position = self.get_position()
                 self.last_position_update_time = time.time()
                 logger.info(f"同步 position: 多头 {self.long_position} 张, 空头 {self.short_position} 张 @ ticker")
 
             # 检查持仓状态是否过时
-            if time.time() - self.last_orders_update_time > SYNC_TIME:  # 超过 60 秒未更新
+            if time.time() - self.last_orders_update_time > sync_time:  # 超过配置的同步时间未更新
                 self.check_orders_status()
                 self.last_orders_update_time = time.time()
                 logger.info(f"同步 orders: 多头买单 {self.buy_long_orders} 张, 多头卖单 {self.sell_long_orders} 张,空头卖单 {self.sell_short_orders} 张, 空头买单 {self.buy_short_orders} 张 @ ticker")
@@ -597,33 +592,37 @@ class GridTradingBot:
         # print(side)
 
         """调整止盈单的交易数量"""
+        position_limit = self.get_dynamic_position_limit()
+        position_threshold = self.get_dynamic_position_threshold()
+        
         if side == 'long':
-            if position > POSITION_LIMIT:
-                # logger.info(f"持仓过大超过阈值{POSITION_LIMIT}, {side}双倍止盈止损")
+            if position > position_limit:
+                # logger.info(f"持仓过大超过阈值{position_limit}, {side}双倍止盈止损")
                 self.long_initial_quantity = self.initial_quantity * 2
 
             # 如果 short 锁仓 long 两倍
-            elif self.short_position >= POSITION_THRESHOLD:
+            elif self.short_position >= position_threshold:
                 self.long_initial_quantity = self.initial_quantity * 2
             else:
                 self.long_initial_quantity = self.initial_quantity
 
         elif side == 'short':
-            if position > POSITION_LIMIT:
-                # logger.info(f"持仓过大超过阈值{POSITION_LIMIT}, {side}双倍止盈止损")
+            if position > position_limit:
+                # logger.info(f"持仓过大超过阈值{position_limit}, {side}双倍止盈止损")
                 self.short_initial_quantity = self.initial_quantity * 2
 
             # 如果 long 锁仓 short 两倍
-            elif self.long_position >= POSITION_THRESHOLD:
+            elif self.long_position >= position_threshold:
                 self.short_initial_quantity = self.initial_quantity * 2
             else:
                 self.short_initial_quantity = self.initial_quantity
 
     async def initialize_long_orders(self):
-        # 检查上次挂单时间，确保 10 秒内不重复挂单
+        # 检查上次挂单时间，确保配置的间隔时间内不重复挂单
         current_time = time.time()
-        if current_time - self.last_long_order_time < ORDER_FIRST_TIME:
-            logger.info(f"距离上次多头挂单时间不足 {ORDER_FIRST_TIME} 秒，跳过本次挂单")
+        order_first_time = self.config_manager.get("risk_params", "ORDER_FIRST_TIME", 10)
+        if current_time - self.last_long_order_time < order_first_time:
+            logger.info(f"距离上次多头挂单时间不足 {order_first_time} 秒，跳过本次挂单")
             return
 
         # # 检查是否有未成交的挂单
@@ -643,10 +642,11 @@ class GridTradingBot:
         logger.info("初始化多头挂单完成")
 
     async def initialize_short_orders(self):
-        # 检查上次挂单时间，确保 10 秒内不重复挂单
+        # 检查上次挂单时间，确保配置的间隔时间内不重复挂单
         current_time = time.time()
-        if current_time - self.last_short_order_time < ORDER_FIRST_TIME:
-            print(f"距离上次空头挂单时间不足 {ORDER_FIRST_TIME} 秒，跳过本次挂单")
+        order_first_time = self.config_manager.get("risk_params", "ORDER_FIRST_TIME", 10)
+        if current_time - self.last_short_order_time < order_first_time:
+            print(f"距离上次空头挂单时间不足 {order_first_time} 秒，跳过本次挂单")
             return
 
         # 撤销所有空头挂单
@@ -898,10 +898,11 @@ class GridTradingBot:
         """检查持仓并减少库存风险"""
 
         # 设置持仓阈值
-        local_position_threshold = POSITION_THRESHOLD * 0.8  # 阈值的 80%
+        position_threshold = self.get_dynamic_position_threshold()
+        local_position_threshold = position_threshold * 0.8  # 阈值的 80%
 
         # 设置平仓数量
-        quantity = POSITION_THRESHOLD * 0.1  # 阈值的 10%
+        quantity = position_threshold * 0.1  # 阈值的 10%
 
         if self.long_position >= local_position_threshold and self.short_position >= local_position_threshold:
             logger.info(f"多头和空头持仓均超过阈值 {local_position_threshold}，开始双向平仓，减少库存风险")
@@ -947,14 +948,18 @@ class GridTradingBot:
                 print(f"检测到没有多头持仓{self.long_position}，初始化多头挂单@ ticker")
                 await self.initialize_long_orders()
             else:
-                orders_valid = not (0 < self.buy_long_orders <= self.long_initial_quantity) or \
-                               not (0 < self.sell_long_orders <= self.long_initial_quantity)
-                if orders_valid:
+                # 修复逻辑：只有当订单数量不正常时才重新挂单
+                orders_invalid = (self.buy_long_orders == 0 or self.sell_long_orders == 0) or \
+                                (self.buy_long_orders > self.long_initial_quantity or self.sell_long_orders > self.long_initial_quantity)
+                if orders_invalid:
                     dynamic_threshold = self.get_dynamic_position_threshold()
                     if self.long_position < dynamic_threshold:
                         print('如果 long 持仓没到阈值，同步后再次确认！')
                         self.check_orders_status()
-                        if orders_valid:
+                        # 重新检查订单状态后再决定是否挂单
+                        orders_still_invalid = (self.buy_long_orders == 0 or self.sell_long_orders == 0) or \
+                                              (self.buy_long_orders > self.long_initial_quantity or self.sell_long_orders > self.long_initial_quantity)
+                        if orders_still_invalid:
                             await self.place_long_orders(self.latest_price)
                     else:
                         await self.place_long_orders(self.latest_price)
@@ -966,15 +971,18 @@ class GridTradingBot:
             if self.short_position == 0:
                 await self.initialize_short_orders()
             else:
-                # 检查订单数量是否在合理范围内
-                orders_valid = not (0 < self.sell_short_orders <= self.short_initial_quantity) or \
-                               not (0 < self.buy_short_orders <= self.short_initial_quantity)
-                if orders_valid:
+                # 修复逻辑：只有当订单数量不正常时才重新挂单
+                orders_invalid = (self.sell_short_orders == 0 or self.buy_short_orders == 0) or \
+                                (self.sell_short_orders > self.short_initial_quantity or self.buy_short_orders > self.short_initial_quantity)
+                if orders_invalid:
                     dynamic_threshold = self.get_dynamic_position_threshold()
                     if self.short_position < dynamic_threshold:
                         print('如果 short 持仓没到阈值，同步后再次确认！')
                         self.check_orders_status()
-                        if orders_valid:
+                        # 重新检查订单状态后再决定是否挂单
+                        orders_still_invalid = (self.sell_short_orders == 0 or self.buy_short_orders == 0) or \
+                                              (self.sell_short_orders > self.short_initial_quantity or self.buy_short_orders > self.short_initial_quantity)
+                        if orders_still_invalid:
                             await self.place_short_orders(self.latest_price)
                     else:
                         await self.place_short_orders(self.latest_price)
@@ -1058,11 +1066,11 @@ class GridTradingBot:
     
     def get_dynamic_position_threshold(self):
         """获取动态持仓阈值"""
-        return self.config_manager.get("basic_params", "POSITION_THRESHOLD", POSITION_THRESHOLD)
+        return self.config_manager.get("basic_params", "POSITION_THRESHOLD", 1000)
     
     def get_dynamic_position_limit(self):
         """获取动态持仓限制"""
-        return self.config_manager.get("basic_params", "POSITION_LIMIT", POSITION_LIMIT)
+        return self.config_manager.get("basic_params", "POSITION_LIMIT", 400)
 
 
 # ==================== 主程序 ====================
@@ -1070,13 +1078,14 @@ async def main():
     # 创建配置管理器来读取配置文件
     config_manager = AdvancedConfigManager()
     
-    # 从配置文件读取参数，如果没有则使用硬编码默认值
-    coin_name = config_manager.get("trading_params", "COIN_NAME", COIN_NAME)
-    contract_type = config_manager.get("trading_params", "CONTRACT_TYPE", CONTRACT_TYPE)
-    initial_quantity = config_manager.get("basic_params", "INITIAL_QUANTITY", INITIAL_QUANTITY)
-    leverage = config_manager.get("basic_params", "LEVERAGE", LEVERAGE)
+    # 从配置文件读取参数，使用config.json中的默认值
+    coin_name = config_manager.get("trading_params", "COIN_NAME", "XPL")
+    contract_type = config_manager.get("trading_params", "CONTRACT_TYPE", "USDT")
+    initial_quantity = config_manager.get("basic_params", "INITIAL_QUANTITY", 20)
+    leverage = config_manager.get("basic_params", "LEVERAGE", 20)
+    grid_spacing = config_manager.get("grid_params", "long_grid_spacing", 0.006)  # 使用long_grid_spacing作为默认网格间距
     
-    bot = GridTradingBot(API_KEY, API_SECRET, coin_name, contract_type, GRID_SPACING, initial_quantity, leverage)
+    bot = GridTradingBot(API_KEY, API_SECRET, coin_name, contract_type, grid_spacing, initial_quantity, leverage)
     await bot.run()
 
 if __name__ == "__main__":
