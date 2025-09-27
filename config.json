@@ -1,24 +1,30 @@
 {
-    "_version": "1.1",
+    "_version": "1.2",
     "_description": "AmethystFlame_BN 双向网格交易策略配置文件",
     "trading_params": {
         "COIN_NAME": "XPL",
         "CONTRACT_TYPE": "USDT"
     },
     "basic_params": {
-        "INITIAL_QUANTITY": 20,
-        "POSITION_THRESHOLD": 1000,
-        "POSITION_LIMIT": 400,
+        "INITIAL_QUANTITY": 30,
+        "POSITION_THRESHOLD": 1800,
+        "POSITION_LIMIT": 600,
         "LEVERAGE": 20
     },
     "grid_params": {
-        "long_grid_spacing": 0.006,
-        "short_grid_spacing": 0.008,
-        "long_enabled": true,
+        "long_grid_spacing": 0.005,
+        "short_grid_spacing": 0.005,
+        "long_enabled": false,
         "short_enabled": true
     },
     "risk_params": {
         "ORDER_FIRST_TIME": 10,
         "SYNC_TIME": 10
+    },
+    "pnl_params": {
+        "PNL_DOUBLE_THRESHOLD": 1.0,
+        "PNL_TRIPLE_THRESHOLD": 3.0,
+        "PNL_UPDATE_TIMEOUT": 30,
+        "_description": "盈亏参数: 1USDT时2倍止盈, 3USDT时3倍止盈, 30秒数据超时"
     }
 }

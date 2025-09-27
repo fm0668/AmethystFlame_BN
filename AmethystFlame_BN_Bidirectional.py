@@ -61,20 +61,25 @@ class AdvancedConfigManager:
                 "CONTRACT_TYPE": "USDT"
             },
             "basic_params": {
-                "INITIAL_QUANTITY": 20,
-                "POSITION_THRESHOLD": 1000,
-                "POSITION_LIMIT": 400,
+                "INITIAL_QUANTITY": 30,
+                "POSITION_THRESHOLD": 1800,
+                "POSITION_LIMIT": 600,
                 "LEVERAGE": 20
             },
             "grid_params": {
-                "long_grid_spacing": 0.006,
-                "short_grid_spacing": 0.008,
-                "long_enabled": True,
+                "long_grid_spacing": 0.005,
+                "short_grid_spacing": 0.005,
+                "long_enabled": False,
                 "short_enabled": True
             },
             "risk_params": {
                 "ORDER_FIRST_TIME": 10,
                 "SYNC_TIME": 10
+            },
+            "pnl_params": {
+                "PNL_DOUBLE_THRESHOLD": 1.0,
+                "PNL_TRIPLE_THRESHOLD": 3.0,
+                "PNL_UPDATE_TIMEOUT": 30
             }
         }
         
@@ -220,6 +225,12 @@ class GridTradingBot:
         self.mid_price_short = 0  # short 中间价
         self.lower_price_short = 0  # short 网格上
         self.upper_price_short = 0  # short 网格下
+        
+        # 未实现盈亏相关变量
+        self.long_unrealized_pnl = 0.0  # 多头未实现盈亏
+        self.short_unrealized_pnl = 0.0  # 空头未实现盈亏
+        self.last_pnl_update_time = 0  # 上次盈亏更新时间
+        
         self.listenKey = self.get_listen_key()  # 获取初始 listenKey
 
         # 注册配置变更回调
@@ -532,6 +543,11 @@ class GridTradingBot:
             data = json.loads(message)
             # print(f"收到消息: {data}")  # 打印原始数据
 
+            # 处理账户更新事件（包含未实现盈亏）
+            if data.get("e") == "ACCOUNT_UPDATE":
+                await self.handle_account_update(data)
+                return
+
             if data.get("e") == "ORDER_TRADE_UPDATE":  # 处理订单更新
                 order = data.get("o", {})
                 symbol = order.get("s")  # 交易对
@@ -588,6 +604,57 @@ class GridTradingBot:
                     # # 打印当前持仓状态
                     # logger.info(f"持仓状态: 多头={self.long_position}, 空头={self.short_position}")
 
+    async def handle_account_update(self, data):
+        """处理账户更新事件，提取未实现盈亏信息"""
+        try:
+            account_data = data.get("a", {})
+            positions = account_data.get("P", [])
+            
+            current_time = time.time()
+            
+            for position in positions:
+                symbol = position.get("s")
+                if symbol == f"{self.coin_name}{self.contract_type}":
+                    position_side = position.get("ps")  # LONG 或 SHORT
+                    unrealized_pnl = float(position.get("up", 0))  # 未实现盈亏
+                    
+                    if position_side == "LONG":
+                        self.long_unrealized_pnl = unrealized_pnl
+                        logger.info(f"多头未实现盈亏更新: {unrealized_pnl} USDT")
+                    elif position_side == "SHORT":
+                        self.short_unrealized_pnl = unrealized_pnl
+                        logger.info(f"空头未实现盈亏更新: {unrealized_pnl} USDT")
+                    
+                    self.last_pnl_update_time = current_time
+                    
+        except Exception as e:
+            logger.error(f"处理账户更新事件时出错: {e}")
+
+    def get_pnl_multiplier(self, side):
+        """根据未实现盈亏计算倍数"""
+        pnl_double_threshold = self.config_manager.get("pnl_params", "PNL_DOUBLE_THRESHOLD", 1.0)
+        pnl_triple_threshold = self.config_manager.get("pnl_params", "PNL_TRIPLE_THRESHOLD", 3.0)
+        
+        if side == 'long':
+            pnl = self.long_unrealized_pnl
+        elif side == 'short':
+            pnl = self.short_unrealized_pnl
+        else:
+            return 1.0
+        
+        # 只有盈利时才加速止盈
+        if pnl >= pnl_triple_threshold:
+            return 3.0
+        elif pnl >= pnl_double_threshold:
+            return 2.0
+        else:
+            return 1.0
+
+    def is_pnl_data_fresh(self):
+        """检查盈亏数据是否新鲜"""
+        pnl_timeout = self.config_manager.get("pnl_params", "PNL_UPDATE_TIMEOUT", 30)
+        return (time.time() - self.last_pnl_update_time) < pnl_timeout
+
     def get_take_profit_quantity(self, position, side):
         # print(side)
 
@@ -595,27 +662,42 @@ class GridTradingBot:
         position_limit = self.get_dynamic_position_limit()
         position_threshold = self.get_dynamic_position_threshold()
         
+        # 获取基于盈亏的倍数（仅在盈利时生效）
+        pnl_multiplier = self.get_pnl_multiplier(side) if self.is_pnl_data_fresh() else 1.0
+        
         if side == 'long':
+            base_multiplier = 1.0
+            
             if position > position_limit:
                 # logger.info(f"持仓过大超过阈值{position_limit}, {side}双倍止盈止损")
-                self.long_initial_quantity = self.initial_quantity * 2
-
+                base_multiplier = 2.0
             # 如果 short 锁仓 long 两倍
             elif self.short_position >= position_threshold:
-                self.long_initial_quantity = self.initial_quantity * 2
-            else:
-                self.long_initial_quantity = self.initial_quantity
+                base_multiplier = 2.0
+            
+            # 应用盈亏倍数（单边加速）
+            final_multiplier = max(base_multiplier, pnl_multiplier)
+            self.long_initial_quantity = self.initial_quantity * final_multiplier
+            
+            if pnl_multiplier > 1.0:
+                logger.info(f"多头盈利加速止盈: PnL={self.long_unrealized_pnl:.2f} USDT, 倍数={final_multiplier}x")
 
         elif side == 'short':
+            base_multiplier = 1.0
+            
             if position > position_limit:
                 # logger.info(f"持仓过大超过阈值{position_limit}, {side}双倍止盈止损")
-                self.short_initial_quantity = self.initial_quantity * 2
-
+                base_multiplier = 2.0
             # 如果 long 锁仓 short 两倍
             elif self.long_position >= position_threshold:
-                self.short_initial_quantity = self.initial_quantity * 2
-            else:
-                self.short_initial_quantity = self.initial_quantity
+                base_multiplier = 2.0
+            
+            # 应用盈亏倍数（单边加速）
+            final_multiplier = max(base_multiplier, pnl_multiplier)
+            self.short_initial_quantity = self.initial_quantity * final_multiplier
+            
+            if pnl_multiplier > 1.0:
+                logger.info(f"空头盈利加速止盈: PnL={self.short_unrealized_pnl:.2f} USDT, 倍数={final_multiplier}x")
 
     async def initialize_long_orders(self):
         # 检查上次挂单时间，确保配置的间隔时间内不重复挂单
