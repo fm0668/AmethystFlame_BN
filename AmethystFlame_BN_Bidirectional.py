@@ -57,20 +57,20 @@ class AdvancedConfigManager:
         # 初始化默认配置
         self.default_config = {
             "trading_params": {
-                "COIN_NAME": "XPL",
+                "COIN_NAME": "XNY",
                 "CONTRACT_TYPE": "USDT"
             },
             "basic_params": {
-                "INITIAL_QUANTITY": 30,
-                "POSITION_THRESHOLD": 1800,
-                "POSITION_LIMIT": 600,
+                "INITIAL_QUANTITY": 4000,
+                "POSITION_THRESHOLD": 180000,
+                "POSITION_LIMIT": 80000,
                 "LEVERAGE": 20
             },
             "grid_params": {
                 "long_grid_spacing": 0.005,
                 "short_grid_spacing": 0.005,
-                "long_enabled": False,
-                "short_enabled": True
+                "long_enabled": True,
+                "short_enabled": False
             },
             "risk_params": {
                 "ORDER_FIRST_TIME": 10,
@@ -889,19 +889,18 @@ class GridTradingBot:
                     print(f"持仓{self.long_position}超过极限阈值 {dynamic_threshold}，long装死")
                     if self.sell_long_orders <= 0:
                         r = float((self.long_position / self.short_position) / 100 + 1)
-                        # 使用动态数量
-                        dynamic_quantity = self.get_dynamic_quantity()
+                        # 使用已经根据盈亏调整过的数量
                         self.place_take_profit_order(self.ccxt_symbol, 'long', self.latest_price * r,
-                                                     dynamic_quantity)  # 挂止盈
+                                                     self.long_initial_quantity)  # 挂止盈
+
                 else:
                     # 更新中间价
                     self.update_mid_price('long', latest_price)
                     self.cancel_orders_for_side('long')
-                    # 使用动态数量
-                    dynamic_quantity = self.get_dynamic_quantity()
+                    # 使用已经根据盈亏调整过的数量
                     self.place_take_profit_order(self.ccxt_symbol, 'long', self.upper_price_long,
-                                                 dynamic_quantity)  # 挂止盈
-                    self.place_order('buy', self.lower_price_long, dynamic_quantity, False, 'long')  # 挂补仓
+                                                 self.long_initial_quantity)  # 挂止盈
+                    self.place_order('buy', self.lower_price_long, self.long_initial_quantity, False, 'long')  # 挂补仓
                     logger.info("挂多头止盈，挂多头补仓")
 
         except Exception as e:
@@ -920,20 +919,18 @@ class GridTradingBot:
                     if self.buy_short_orders <= 0:
                         r = float((self.short_position / self.long_position) / 100 + 1)
                         logger.info("发现多头止盈单缺失。。需要补止盈单")
-                        # 使用动态数量
-                        dynamic_quantity = self.get_dynamic_quantity()
+                        # 使用已经根据盈亏调整过的数量
                         self.place_take_profit_order(self.ccxt_symbol, 'short', self.latest_price * r,
-                                                     dynamic_quantity)  # 挂止盈
+                                                     self.short_initial_quantity)  # 挂止盈
 
                 else:
                     # 更新中间价
                     self.update_mid_price('short', latest_price)
                     self.cancel_orders_for_side('short')
-                    # 使用动态数量
-                    dynamic_quantity = self.get_dynamic_quantity()
+                    # 使用已经根据盈亏调整过的数量
                     self.place_take_profit_order(self.ccxt_symbol, 'short', self.lower_price_short,
-                                                 dynamic_quantity)  # 挂止盈
-                    self.place_order('sell', self.upper_price_short, dynamic_quantity, False, 'short')  # 挂补仓
+                                                 self.short_initial_quantity)  # 挂止盈
+                    self.place_order('sell', self.upper_price_short, self.short_initial_quantity, False, 'short')  # 挂补仓
                     logger.info("挂空头止盈，挂空头补仓")
 
         except Exception as e:
