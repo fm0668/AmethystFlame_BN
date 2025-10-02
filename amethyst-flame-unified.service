@@ -1,0 +1,40 @@
+[Unit]
+Description=AmethystFlame Unified Grid Trading Strategy Manager
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=/root/AmethystFlame_BN
+Environment=PATH=/root/AmethystFlame_BN/venv/bin:/usr/local/bin:/usr/bin:/bin
+Environment=PYTHONPATH=/root/AmethystFlame_BN
+Environment=PYTHONUNBUFFERED=1
+
+# 使用统一启动器
+ExecStart=/root/AmethystFlame_BN/venv/bin/python strategy_launcher.py
+
+# 重启策略
+Restart=always
+RestartSec=10
+StartLimitInterval=300
+StartLimitBurst=5
+
+# 日志配置
+StandardOutput=append:/root/AmethystFlame_BN/log/unified_service.log
+StandardError=append:/root/AmethystFlame_BN/log/unified_service_error.log
+
+# 安全配置
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/root/AmethystFlame_BN
+
+# 资源限制
+LimitNOFILE=65536
+LimitNPROC=4096
+
+[Install]
+WantedBy=multi-user.target

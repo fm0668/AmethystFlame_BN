@@ -1,0 +1,58 @@
+{
+  "enabled_strategies": [
+    "bidirectional"
+  ],
+  "strategy_settings": {
+    "bidirectional": {
+      "auto_restart": true,
+      "max_restarts": 5,
+      "description": "双向网格策略 - 同时支持多头和空头交易",
+      "env_vars": {}
+    },
+    "long": {
+      "auto_restart": true,
+      "max_restarts": 5,
+      "description": "做多网格策略 - 专注于多头交易",
+      "env_vars": {}
+    },
+    "short": {
+      "auto_restart": true,
+      "max_restarts": 5,
+      "description": "做空网格策略 - 专注于空头交易",
+      "env_vars": {}
+    }
+  },
+  "global_settings": {
+    "log_level": "INFO",
+    "monitor_interval": 5,
+    "restart_delay": 3
+  },
+  "usage_examples": {
+    "only_long": {
+      "enabled_strategies": ["long"],
+      "description": "仅启用做多网格策略"
+    },
+    "only_short": {
+      "enabled_strategies": ["short"],
+      "description": "仅启用做空网格策略"
+    },
+    "long_and_short": {
+      "enabled_strategies": ["long", "short"],
+      "description": "同时启用做多和做空网格策略"
+    },
+    "all_strategies": {
+      "enabled_strategies": ["bidirectional", "long", "short"],
+      "description": "启用所有策略（注意：可能会有冲突）"
+    },
+    "bidirectional_only": {
+      "enabled_strategies": ["bidirectional"],
+      "description": "仅启用双向网格策略（推荐）"
+    }
+  },
+  "configuration_notes": {
+    "strategy_selection": "根据市场情况选择合适的策略组合",
+    "conflict_warning": "避免同时运行可能冲突的策略（如bidirectional与long/short）",
+    "resource_usage": "每个策略都会消耗系统资源，请根据VPS配置合理选择",
+    "api_limits": "注意Binance API调用频率限制，避免同时运行过多策略"
+  }
+}
