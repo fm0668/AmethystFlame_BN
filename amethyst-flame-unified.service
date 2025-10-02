@@ -13,7 +13,7 @@ Environment=PYTHONPATH=/root/AmethystFlame_BN
 Environment=PYTHONUNBUFFERED=1
 
 # 使用统一启动器
-ExecStart=/root/AmethystFlame_BN/venv/bin/python strategy_launcher.py
+ExecStart=/root/AmethystFlame_BN/venv/bin/python /root/AmethystFlame_BN/strategy_launcher.py
 
 # 重启策略
 Restart=always
