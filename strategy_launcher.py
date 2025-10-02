@@ -105,15 +105,12 @@ class StrategyLauncher:
             if "env_vars" in strategy_settings:
                 env.update(strategy_settings["env_vars"])
             
-            # 启动进程 - 使用 nohup 和 setsid 确保进程独立运行
+            # 启动进程 - 确保进程独立运行但保持日志输出
             process = subprocess.Popen(
                 cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
                 env=env,
                 cwd=os.getcwd(),
-                start_new_session=True,  # 创建新的进程组
-                preexec_fn=os.setsid if hasattr(os, 'setsid') else None  # Unix系统下创建新会话
+                start_new_session=True  # 创建新的进程组，足以实现进程独立
             )
             
             self.processes[strategy_name] = {
