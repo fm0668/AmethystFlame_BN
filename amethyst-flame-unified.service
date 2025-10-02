@@ -25,11 +25,8 @@ StartLimitBurst=5
 StandardOutput=append:/root/AmethystFlame_BN/log/unified_service.log
 StandardError=append:/root/AmethystFlame_BN/log/unified_service_error.log
 
-# 安全配置
+# 安全配置（简化以避免虚拟环境访问问题）
 NoNewPrivileges=true
-PrivateTmp=true
-ProtectSystem=strict
-ProtectHome=true
 ReadWritePaths=/root/AmethystFlame_BN
 
 # 资源限制
