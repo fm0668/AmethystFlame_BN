@@ -11,6 +11,9 @@ WorkingDirectory=/root/AmethystFlame_BN
 Environment=PATH=/root/AmethystFlame_BN/venv/bin:/usr/local/bin:/usr/bin:/bin
 Environment=PYTHONPATH=/root/AmethystFlame_BN
 Environment=PYTHONUNBUFFERED=1
+KillMode=mixed
+TimeoutStopSec=30
+RemainAfterExit=no
 
 # 使用统一启动器
 ExecStart=/root/AmethystFlame_BN/venv/bin/python /root/AmethystFlame_BN/strategy_launcher.py
